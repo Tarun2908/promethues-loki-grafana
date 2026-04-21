@@ -1,0 +1,317 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CI/CD pipeline for the LOS application using CodePipeline, CodeBuild, and CodeStar Connections
+
+Parameters:
+  GitHubOwner:
+    Type: String
+    Description: GitHub repository owner (user or organization)
+  GitHubRepo:
+    Type: String
+    Description: GitHub repository name
+  GitHubBranch:
+    Type: String
+    Default: main
+    Description: GitHub branch to track
+  EKSClusterName:
+    Type: String
+    Description: Name of the existing EKS cluster
+  ECRRepositoryUri:
+    Type: String
+    Description: URI of the ECR repository (e.g., 123456789012.dkr.ecr.ap-south-1.amazonaws.com/los-app)
+
+Resources:
+  # -------------------------------------------------------
+  # GitHub Connection via CodeStar Connections
+  # -------------------------------------------------------
+  GitHubConnection:
+    Type: AWS::CodeStarConnections::Connection
+    Properties:
+      ConnectionName: los-app-github-connection
+      ProviderType: GitHub
+
+  # -------------------------------------------------------
+  # S3 Artifact Bucket
+  # -------------------------------------------------------
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: CleanupOldArtifacts
+            Status: Enabled
+            ExpirationInDays: 30
+      Tags:
+        - Key: Application
+          Value: los-app
+
+  # -------------------------------------------------------
+  # IAM Role: CodePipeline
+  # -------------------------------------------------------
+  CodePipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodePipelinePolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:GetBucketVersioning
+                Resource:
+                  - !GetAtt ArtifactBucket.Arn
+                  - !Sub "${ArtifactBucket.Arn}/*"
+              - Effect: Allow
+                Action:
+                  - codebuild:BatchGetBuilds
+                  - codebuild:StartBuild
+                Resource:
+                  - !GetAtt BuildProject.Arn
+                  - !GetAtt DeployProject.Arn
+              - Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
+                Resource:
+                  - !Ref GitHubConnection
+
+  # -------------------------------------------------------
+  # IAM Role: CodeBuild (Build stage - Docker build + ECR push)
+  # -------------------------------------------------------
+  CodeBuildBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodeBuildBuildPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:PutImage
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                Resource: !Sub "arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/los-app"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource:
+                  - !Sub "${ArtifactBucket.Arn}/*"
+
+  # -------------------------------------------------------
+  # IAM Role: CodeBuild (Deploy stage - kubectl to EKS)
+  # -------------------------------------------------------
+  CodeBuildDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodeBuildDeployPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - eks:DescribeCluster
+                Resource: !Sub "arn:aws:eks:${AWS::Region}:${AWS::AccountId}:cluster/${EKSClusterName}"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource:
+                  - !Sub "${ArtifactBucket.Arn}/*"
+
+  # -------------------------------------------------------
+  # CodeBuild Project: Build (Docker build + ECR push)
+  # -------------------------------------------------------
+  BuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: los-app-build
+      Description: Build Docker image and push to ECR
+      ServiceRole: !GetAtt CodeBuildBuildRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec.yml
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref "AWS::Region"
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref "AWS::AccountId"
+          - Name: IMAGE_REPO_NAME
+            Value: los-app
+          - Name: ECR_REPOSITORY_URI
+            Value: !Ref ECRRepositoryUri
+      Tags:
+        - Key: Application
+          Value: los-app
+
+  # -------------------------------------------------------
+  # CodeBuild Project: Deploy (kubectl set image)
+  # -------------------------------------------------------
+  DeployProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: los-app-deploy
+      Description: Deploy updated image to EKS cluster
+      ServiceRole: !GetAtt CodeBuildDeployRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            install:
+              commands:
+                - curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+                - chmod +x kubectl
+                - mv kubectl /usr/local/bin/
+            pre_build:
+              commands:
+                - aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region $AWS_DEFAULT_REGION
+            build:
+              commands:
+                - echo "Deploying image $IMAGE_URI to EKS cluster $EKS_CLUSTER_NAME"
+                - kubectl set image deployment/los-app los-app=$IMAGE_URI -n los-app
+                - kubectl rollout status deployment/los-app -n los-app --timeout=120s
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        PrivilegedMode: false
+        EnvironmentVariables:
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref "AWS::Region"
+          - Name: EKS_CLUSTER_NAME
+            Value: !Ref EKSClusterName
+          - Name: IMAGE_URI
+            Value: !Sub "${ECRRepositoryUri}:latest"
+      Tags:
+        - Key: Application
+          Value: los-app
+
+  # -------------------------------------------------------
+  # CodePipeline
+  # -------------------------------------------------------
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: los-app-pipeline
+      RoleArn: !GetAtt CodePipelineRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+      Stages:
+        # Stage 1: Source - Pull from GitHub via CodeStar Connection
+        - Name: Source
+          Actions:
+            - Name: GitHubSource
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: "1"
+              Configuration:
+                ConnectionArn: !Ref GitHubConnection
+                FullRepositoryId: !Sub "${GitHubOwner}/${GitHubRepo}"
+                BranchName: !Ref GitHubBranch
+                OutputArtifactFormat: CODE_ZIP
+              OutputArtifacts:
+                - Name: SourceOutput
+
+        # Stage 2: Build - Docker build and push to ECR
+        - Name: Build
+          Actions:
+            - Name: DockerBuild
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref BuildProject
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: BuildOutput
+
+        # Stage 3: Deploy - kubectl set image on EKS
+        - Name: Deploy
+          Actions:
+            - Name: DeployToEKS
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref DeployProject
+              InputArtifacts:
+                - Name: BuildOutput
+
+Outputs:
+  PipelineName:
+    Description: Name of the CodePipeline
+    Value: !Ref Pipeline
+  PipelineUrl:
+    Description: URL to the CodePipeline console
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/codesuite/codepipeline/pipelines/${Pipeline}/view"
+  GitHubConnectionArn:
+    Description: ARN of the CodeStar GitHub connection (must be confirmed in console)
+    Value: !Ref GitHubConnection
+  ArtifactBucketName:
+    Description: S3 bucket for pipeline artifacts
+    Value: !Ref ArtifactBucket

@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: los-app-config
+  namespace: los-app
+  labels:
+    app: los-app
+data:
+  PORT: "3000"
+  LOG_LEVEL: "info"

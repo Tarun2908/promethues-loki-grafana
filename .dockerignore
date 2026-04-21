@@ -1,0 +1,13 @@
+node_modules
+npm-debug.log*
+.git
+.gitignore
+.kiro
+*.md
+.dockerignore
+Dockerfile
+k8s
+infra
+monitoring
+scripts
+**/*.test.js

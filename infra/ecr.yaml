@@ -1,0 +1,45 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: ECR repository for the LOS application container images
+
+Resources:
+  LOSAppECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: los-app
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Retain only the 10 most recent images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 10
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+      Tags:
+        - Key: Application
+          Value: los-app
+        - Key: Environment
+          Value: production
+
+Outputs:
+  RepositoryUri:
+    Description: ECR repository URI
+    Value: !GetAtt LOSAppECRRepository.RepositoryUri
+    Export:
+      Name: !Sub "${AWS::StackName}-RepositoryUri"
+  RepositoryArn:
+    Description: ECR repository ARN
+    Value: !GetAtt LOSAppECRRepository.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-RepositoryArn"

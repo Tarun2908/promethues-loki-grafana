@@ -1,0 +1,69 @@
+# Helm values for prometheus-community/prometheus
+# Deploy to monitoring namespace: helm install prometheus prometheus-community/prometheus -n monitoring -f prometheus-values.yaml
+
+server:
+  retention: "7d"
+  persistentVolume:
+    enabled: true
+    size: 10Gi
+
+  global:
+    scrape_interval: 15s
+    evaluation_interval: 15s
+
+# Enable kube-state-metrics for cluster-level metrics (pod, deployment, node status)
+kube-state-metrics:
+  enabled: true
+
+# Enable node-exporter for node-level metrics (CPU, memory, disk, network)
+nodeExporter:
+  enabled: true
+
+# Disable components not needed for this deployment
+alertmanager:
+  enabled: false
+
+pushgateway:
+  enabled: false
+
+# Scrape configuration
+extraScrapeConfigs: |
+  # Scrape LOS application pods via annotation-based discovery
+  - job_name: 'los-app-pods'
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+            - los-app
+    relabel_configs:
+      # Only scrape pods with prometheus.io/scrape: "true"
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: "true"
+      # Use prometheus.io/port annotation for target port
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        target_label: __address__
+        regex: (.+)
+        replacement: ${1}
+        source_labels: [__meta_kubernetes_pod_ip, __meta_kubernetes_pod_annotation_prometheus_io_port]
+      - source_labels: [__meta_kubernetes_pod_ip, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        target_label: __address__
+        regex: (.+);(.+)
+        replacement: $1:$2
+      # Use prometheus.io/path annotation for metrics path
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+        action: replace
+        target_label: __metrics_path__
+        regex: (.+)
+      # Add pod name and namespace labels
+      - source_labels: [__meta_kubernetes_namespace]
+        action: replace
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        action: replace
+        target_label: pod
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        action: replace
+        target_label: app

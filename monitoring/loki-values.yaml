@@ -1,0 +1,80 @@
+# Helm values for grafana/loki-stack
+# Deploy to monitoring namespace: helm install loki grafana/loki-stack -n monitoring -f loki-values.yaml
+
+loki:
+  enabled: true
+  config:
+    auth_enabled: false
+    ingester:
+      lifecycler:
+        ring:
+          kvstore:
+            store: inmemory
+          replication_factor: 1
+      chunk_idle_period: 5m
+      chunk_retain_period: 30s
+    schema_config:
+      configs:
+        - from: "2023-01-01"
+          store: boltdb-shipper
+          object_store: filesystem
+          schema: v11
+          index:
+            prefix: index_
+            period: 24h
+    storage_config:
+      boltdb_shipper:
+        active_index_directory: /data/loki/boltdb-shipper-active
+        cache_location: /data/loki/boltdb-shipper-cache
+        shared_store: filesystem
+      filesystem:
+        directory: /data/loki/chunks
+    limits_config:
+      enforce_metric_name: false
+      reject_old_samples: true
+      reject_old_samples_max_age: 168h
+    table_manager:
+      retention_deletes_enabled: true
+      retention_period: 168h
+  persistence:
+    enabled: true
+    size: 10Gi
+
+promtail:
+  enabled: true
+  config:
+    lokiAddress: http://loki:3100/loki/api/v1/push
+    snippets:
+      # Collect logs from pods in los-app namespace
+      scrapeConfigs: |
+        - job_name: kubernetes-pods
+          pipeline_stages:
+            - cri: {}
+            - json:
+                expressions:
+                  level: level
+                  timestamp: timestamp
+                  requestId: requestId
+            - labels:
+                level:
+                requestId:
+          kubernetes_sd_configs:
+            - role: pod
+          relabel_configs:
+            - source_labels: [__meta_kubernetes_pod_node_name]
+              target_label: __host__
+            - action: labelmap
+              regex: __meta_kubernetes_pod_label_(.+)
+            - source_labels: [__meta_kubernetes_namespace]
+              action: replace
+              target_label: namespace
+            - source_labels: [__meta_kubernetes_pod_name]
+              action: replace
+              target_label: pod
+            - source_labels: [__meta_kubernetes_pod_container_name]
+              action: replace
+              target_label: container
+            # Keep all pods but add namespace label for filtering in Grafana
+            - source_labels: [__meta_kubernetes_namespace]
+              action: keep
+              regex: .*
