@@ -5,8 +5,8 @@ server:
   retention: "7d"
   persistentVolume:
     enabled: true
+    storageClass: ebs-sc
     size: 10Gi
-
   global:
     scrape_interval: 15s
     evaluation_interval: 15s
@@ -15,9 +15,9 @@ server:
 kube-state-metrics:
   enabled: true
 
-# Enable node-exporter for node-level metrics (CPU, memory, disk, network)
+# Disable node-exporter to save pod slots on small clusters
 nodeExporter:
-  enabled: true
+  enabled: false
 
 # Disable components not needed for this deployment
 alertmanager:
@@ -28,7 +28,6 @@ pushgateway:
 
 # Scrape configuration
 extraScrapeConfigs: |
-  # Scrape LOS application pods via annotation-based discovery
   - job_name: 'los-app-pods'
     kubernetes_sd_configs:
       - role: pod
@@ -36,28 +35,18 @@ extraScrapeConfigs: |
           names:
             - los-app
     relabel_configs:
-      # Only scrape pods with prometheus.io/scrape: "true"
       - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
         action: keep
         regex: "true"
-      # Use prometheus.io/port annotation for target port
-      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_port]
-        action: replace
-        target_label: __address__
-        regex: (.+)
-        replacement: ${1}
-        source_labels: [__meta_kubernetes_pod_ip, __meta_kubernetes_pod_annotation_prometheus_io_port]
       - source_labels: [__meta_kubernetes_pod_ip, __meta_kubernetes_pod_annotation_prometheus_io_port]
         action: replace
         target_label: __address__
         regex: (.+);(.+)
         replacement: $1:$2
-      # Use prometheus.io/path annotation for metrics path
       - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
         action: replace
         target_label: __metrics_path__
         regex: (.+)
-      # Add pod name and namespace labels
       - source_labels: [__meta_kubernetes_namespace]
         action: replace
         target_label: namespace
