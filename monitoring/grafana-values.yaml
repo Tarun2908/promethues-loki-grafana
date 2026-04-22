@@ -22,7 +22,7 @@ datasources:
         access: proxy
         editable: false
 
-# Dashboard provisioning — load dashboards from ConfigMaps with the los-app-dashboards label
+# Dashboard provisioning — load dashboards from ConfigMaps
 dashboardProviders:
   dashboardproviders.yaml:
     apiVersion: 1
@@ -62,7 +62,8 @@ service:
   type: ClusterIP
   port: 80
 
-# Persistence
+# Persistence — use your EBS StorageClass
 persistence:
   enabled: true
+  storageClassName: ebs-sc
   size: 5Gi
